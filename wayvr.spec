@@ -1,6 +1,6 @@
 Name:           wayvr
 Version:        26.7.1
-Release:        1%{?dist}
+Release:        2%{?dist}
 Summary:        Lightweight OpenXR/OpenVR desktop overlay for Linux
 
 License:        GPL-3.0-only
@@ -20,6 +20,8 @@ BuildRequires:  desktop-file-utils
 BuildRequires:  fontconfig-devel
 BuildRequires:  gcc
 BuildRequires:  gcc-c++
+BuildRequires:  binutils
+BuildRequires:  patchelf
 BuildRequires:  glslc
 BuildRequires:  libdav1d-devel
 BuildRequires:  libinput-devel
@@ -62,12 +64,28 @@ install -pm 0644 vendor/vendor-config.toml .cargo/config.toml
 %build
 export CARGO_HOME="%{_builddir}/cargo-home"
 export CARGO_NET_OFFLINE=true
+
 cargo build \
     --release \
     --frozen \
     --offline \
     -p wayvr \
     -p wayvrctl
+
+if patchelf --print-needed target/release/wayvr | grep -qx 'libopenvr_api.so'; then
+    openvr_library="$(readlink -f %{_libdir}/libopenvr_api.so)"
+    openvr_soname="$(objdump -p "$openvr_library" |
+        awk '$1 == "SONAME" { print $2; exit }')"
+
+    test -n "$openvr_soname"
+
+    patchelf \
+        --replace-needed libopenvr_api.so "$openvr_soname" \
+        target/release/wayvr
+fi
+
+! patchelf --print-needed target/release/wayvr |
+    grep -qx 'libopenvr_api.so'
 
 %install
 install -Dm 0755 target/release/wayvr \
@@ -94,5 +112,8 @@ desktop-file-validate wayvr/wayvr.desktop
 %{_datadir}/pixmaps/wayvr.png
 
 %changelog
+* Sat Aug 1 2026 nexryai - 26.7.1-2
+- Fix OpenVR runtime dependency on Fedora
+
 * Fri Jul 31 2026 nexryai - 26.7.1-1
 - Initial COPR package
