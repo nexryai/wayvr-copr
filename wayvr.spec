@@ -1,6 +1,6 @@
 Name:           wayvr
 Version:        26.7.1
-Release:        2%{?dist}
+Release:        3%{?dist}
 Summary:        Lightweight OpenXR/OpenVR desktop overlay for Linux
 
 License:        GPL-3.0-only
@@ -11,6 +11,11 @@ Source1:        %{url}/releases/download/v%{version}/vendor.tar.xz
 # Upstream currently publishes and tests Linux VR release artifacts primarily on x86_64.
 ExclusiveArch:  x86_64
 
+# WayVR's ovr_overlay dependency links against its pinned vendored OpenVR
+# library. Keep that exact runtime library private to WayVR instead of
+# replacing it with Fedora's newer system OpenVR ABI.
+Provides:       bundled(openvr)
+
 BuildRequires:  alsa-lib-devel
 BuildRequires:  cargo
 BuildRequires:  clang
@@ -20,7 +25,6 @@ BuildRequires:  desktop-file-utils
 BuildRequires:  fontconfig-devel
 BuildRequires:  gcc
 BuildRequires:  gcc-c++
-BuildRequires:  binutils
 BuildRequires:  patchelf
 BuildRequires:  glslc
 BuildRequires:  libdav1d-devel
@@ -34,7 +38,6 @@ BuildRequires:  libxkbcommon-devel
 BuildRequires:  libxkbcommon-x11-devel
 BuildRequires:  make
 BuildRequires:  mesa-libEGL-devel
-BuildRequires:  openvr-devel
 BuildRequires:  openxr-devel
 BuildRequires:  openssl-devel
 BuildRequires:  pipewire-devel
@@ -46,7 +49,7 @@ BuildRequires:  vulkan-headers
 BuildRequires:  vulkan-loader-devel
 BuildRequires:  wayland-devel
 
-Recommends:     xwayland-satellite
+Requires:       xwayland-satellite
 
 %description
 WayVR is a lightweight OpenXR/OpenVR overlay that provides access to Wayland
@@ -72,26 +75,33 @@ cargo build \
     -p wayvr \
     -p wayvrctl
 
-if patchelf --print-needed target/release/wayvr | grep -qx 'libopenvr_api.so'; then
-    openvr_library="$(readlink -f %{_libdir}/libopenvr_api.so)"
-    openvr_soname="$(objdump -p "$openvr_library" |
-        awk '$1 == "SONAME" { print $2; exit }')"
-
-    test -n "$openvr_soname"
-
-    patchelf \
-        --replace-needed libopenvr_api.so "$openvr_soname" \
-        target/release/wayvr
-fi
-
-! patchelf --print-needed target/release/wayvr |
-    grep -qx 'libopenvr_api.so'
-
 %install
 install -Dm 0755 target/release/wayvr \
     %{buildroot}%{_bindir}/wayvr
+
 install -Dm 0755 target/release/wayvrctl \
     %{buildroot}%{_bindir}/wayvrctl
+
+# ovr_overlay links WayVR against the OpenVR library bundled with its pinned
+# OpenVR source. The same library must therefore be used at runtime.
+openvr_library="$(find vendor \
+    -type f \
+    -path '*/openvr/bin/linux64/libopenvr_api.so' \
+    -print -quit)"
+
+if [ -z "$openvr_library" ]; then
+    echo "Bundled libopenvr_api.so was not found in vendor sources" >&2
+    exit 1
+fi
+
+install -Dm 0755 "$openvr_library" \
+    %{buildroot}%{_libdir}/wayvr/libopenvr_api.so
+
+# Make WayVR load its private OpenVR runtime rather than a system OpenVR
+# library with a potentially incompatible ABI.
+patchelf \
+    --set-rpath '%{_libdir}/wayvr' \
+    %{buildroot}%{_bindir}/wayvr
 
 desktop-file-install \
     --dir=%{buildroot}%{_datadir}/applications \
@@ -103,15 +113,30 @@ install -Dm 0644 wayvr/wayvr.png \
 %check
 desktop-file-validate wayvr/wayvr.desktop
 
+# Ensure WayVR still requests the exact unversioned OpenVR library it was
+# built against and that its private runtime directory is configured.
+patchelf --print-needed %{buildroot}%{_bindir}/wayvr | \
+    grep -qx 'libopenvr_api.so'
+
+test "$(patchelf --print-rpath %{buildroot}%{_bindir}/wayvr)" = \
+    '%{_libdir}/wayvr'
+
+test -f %{buildroot}%{_libdir}/wayvr/libopenvr_api.so
+
 %files
 %license LICENSE
 %doc README.md
 %{_bindir}/wayvr
 %{_bindir}/wayvrctl
+%{_libdir}/wayvr/libopenvr_api.so
 %{_datadir}/applications/wayvr.desktop
 %{_datadir}/pixmaps/wayvr.png
 
 %changelog
+* Tue Aug 11 2026 nexryai - 26.7.1-3
+- Bundle the OpenVR runtime used by upstream instead of replacing it with system OpenVR
+- Make xwayland-satellite a required runtime dependency
+
 * Sat Aug 1 2026 nexryai - 26.7.1-2
 - Fix OpenVR runtime dependency on Fedora
 
