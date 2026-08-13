@@ -1,6 +1,6 @@
 Name:           wayvr
 Version:        26.7.1
-Release:        3%{?dist}
+Release:        4%{?dist}
 Summary:        Lightweight OpenXR/OpenVR desktop overlay for Linux
 
 License:        GPL-3.0-only
@@ -25,7 +25,7 @@ BuildRequires:  desktop-file-utils
 BuildRequires:  fontconfig-devel
 BuildRequires:  gcc
 BuildRequires:  gcc-c++
-BuildRequires:  patchelf
+BuildRequires:  binutils
 BuildRequires:  glslc
 BuildRequires:  libdav1d-devel
 BuildRequires:  libinput-devel
@@ -68,11 +68,22 @@ install -pm 0644 vendor/vendor-config.toml .cargo/config.toml
 export CARGO_HOME="%{_builddir}/cargo-home"
 export CARGO_NET_OFFLINE=true
 
-cargo build \
+# Embed the private OpenVR search path while linking.  Using patchelf here
+# corrupts this large PIE's program header table on Fedora, leaving it with no
+# PT_LOAD segments and making it segfault immediately at its entry point.
+cargo rustc \
     --release \
     --frozen \
     --offline \
     -p wayvr \
+    --bin wayvr \
+    -- \
+    -C link-arg=-Wl,-rpath,%{_libdir}/wayvr
+
+cargo build \
+    --release \
+    --frozen \
+    --offline \
     -p wayvrctl
 
 %install
@@ -97,12 +108,6 @@ fi
 install -Dm 0755 "$openvr_library" \
     %{buildroot}%{_libdir}/wayvr/libopenvr_api.so
 
-# Make WayVR load its private OpenVR runtime rather than a system OpenVR
-# library with a potentially incompatible ABI.
-patchelf \
-    --set-rpath '%{_libdir}/wayvr' \
-    %{buildroot}%{_bindir}/wayvr
-
 desktop-file-install \
     --dir=%{buildroot}%{_datadir}/applications \
     wayvr/wayvr.desktop
@@ -113,15 +118,24 @@ install -Dm 0644 wayvr/wayvr.png \
 %check
 desktop-file-validate wayvr/wayvr.desktop
 
-# Ensure WayVR still requests the exact unversioned OpenVR library it was
-# built against and that its private runtime directory is configured.
-patchelf --print-needed %{buildroot}%{_bindir}/wayvr | \
-    grep -qx 'libopenvr_api.so'
+# A missing PT_LOAD is the signature of the executable corruption that caused
+# an immediate SIGSEGV in release 3.  Also verify the dynamic dependency and
+# link-time RUNPATH without modifying the finished ELF.
+LC_ALL=C readelf -lW %{buildroot}%{_bindir}/wayvr | \
+    grep -q '^[[:space:]]*LOAD[[:space:]]'
 
-test "$(patchelf --print-rpath %{buildroot}%{_bindir}/wayvr)" = \
-    '%{_libdir}/wayvr'
+LC_ALL=C readelf -dW %{buildroot}%{_bindir}/wayvr | \
+    grep -Fq '(NEEDED)             Shared library: [libopenvr_api.so]'
+
+LC_ALL=C readelf -dW %{buildroot}%{_bindir}/wayvr | \
+    grep -Fq '(RUNPATH)            Library runpath: [%{_libdir}/wayvr]'
 
 test -f %{buildroot}%{_libdir}/wayvr/libopenvr_api.so
+
+# Exercise the loader as well as the ELF structure.  The final RUNPATH points
+# at the installed location, so direct it to the staged private library here.
+LD_LIBRARY_PATH=%{buildroot}%{_libdir}/wayvr \
+    %{buildroot}%{_bindir}/wayvr --help >/dev/null
 
 %files
 %license LICENSE
@@ -133,6 +147,10 @@ test -f %{buildroot}%{_libdir}/wayvr/libopenvr_api.so
 %{_datadir}/pixmaps/wayvr.png
 
 %changelog
+* Fri Aug 14 2026 nexryai - 26.7.1-4
+- Embed the private OpenVR RUNPATH at link time instead of using patchelf
+- Reject executables without loadable segments and smoke-test the staged binary
+
 * Tue Aug 11 2026 nexryai - 26.7.1-3
 - Bundle the OpenVR runtime used by upstream instead of replacing it with system OpenVR
 - Make xwayland-satellite a required runtime dependency
