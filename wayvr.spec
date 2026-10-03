@@ -1,5 +1,5 @@
 Name:           wayvr
-Version:        26.7.1
+Version:        26.8.0
 Release:        4%{?dist}
 Summary:        Lightweight OpenXR/OpenVR desktop overlay for Linux
 
@@ -147,6 +147,9 @@ LD_LIBRARY_PATH=%{buildroot}%{_libdir}/wayvr \
 %{_datadir}/pixmaps/wayvr.png
 
 %changelog
+* Sat Oct 03 2026 nexryai - 26.8.0-1
+- Upgrade WayVR to v26.8.0
+
 * Fri Aug 14 2026 nexryai - 26.7.1-4
 - Embed the private OpenVR RUNPATH at link time instead of using patchelf
 - Reject executables without loadable segments and smoke-test the staged binary
